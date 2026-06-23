@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manufacturing Anomaly Detection — Plan</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      padding: 2rem;
+      line-height: 1.6;
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+
+    h1 { font-size: 1.8rem; color: #f8fafc; margin-bottom: 0.25rem; }
+    h2 { font-size: 1.2rem; color: #94a3b8; margin: 2rem 0 1rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #1e293b; padding-bottom: 0.4rem; }
+    h3 { font-size: 1rem; color: #7dd3fc; margin: 1.2rem 0 0.4rem; }
+
+    .subtitle { color: #64748b; font-size: 0.9rem; margin-bottom: 2rem; }
+
+    p { margin-bottom: 0.8rem; color: #cbd5e1; }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 1.2rem 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .highlight {
+      background: #0f2942;
+      border-left: 3px solid #38bdf8;
+      padding: 0.8rem 1rem;
+      border-radius: 0 6px 6px 0;
+      margin: 1rem 0;
+      color: #bae6fd;
+      font-style: italic;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      margin: 0.8rem 0;
+    }
+    th {
+      background: #0f172a;
+      color: #94a3b8;
+      text-align: left;
+      padding: 0.5rem 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+    td {
+      padding: 0.5rem 0.8rem;
+      border-top: 1px solid #1e293b;
+      color: #cbd5e1;
+      vertical-align: top;
+    }
+    tr:hover td { background: #1a2740; }
+    .sev-critical { color: #f87171; font-weight: 600; }
+    .sev-high     { color: #fb923c; font-weight: 600; }
+    .sev-medium   { color: #facc15; font-weight: 600; }
+
+    .decision-grid { display: grid; gap: 0.8rem; margin: 1rem 0; }
+    .decision-item {
+      background: #0f172a;
+      border: 1px solid #1e3a5f;
+      border-radius: 6px;
+      padding: 0.8rem 1rem;
+    }
+    .decision-item .condition { color: #7dd3fc; font-size: 0.85rem; margin-bottom: 0.3rem; }
+    .decision-item .method { color: #f8fafc; font-weight: 600; }
+    .decision-item .desc { color: #94a3b8; font-size: 0.85rem; margin-top: 0.3rem; }
+
+    pre {
+      background: #0a0f1e;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 1rem;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      color: #a5f3fc;
+      white-space: pre;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      margin: 0.8rem 0;
+    }
+
+    code {
+      background: #1e293b;
+      border-radius: 3px;
+      padding: 0.1em 0.35em;
+      font-size: 0.87em;
+      color: #7dd3fc;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+    }
+
+    .prompt-block {
+      background: #0a0f1e;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 1rem;
+      font-size: 0.82rem;
+      color: #d1fae5;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      white-space: pre-wrap;
+      margin: 0.6rem 0 1rem;
+    }
+
+    .checklist { list-style: none; padding: 0; margin: 0.5rem 0; }
+    .checklist li {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px solid #1a2436;
+      color: #cbd5e1;
+      font-size: 0.9rem;
+    }
+    .checklist li:last-child { border-bottom: none; }
+    .checklist input[type="checkbox"] {
+      margin-top: 0.15rem;
+      accent-color: #38bdf8;
+      cursor: pointer;
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
+    }
+    .checklist label { cursor: pointer; }
+
+    hr { border: none; border-top: 1px solid #1e293b; margin: 0.5rem 0; }
+
+    .tip {
+      background: #1a2d1a;
+      border-left: 3px solid #4ade80;
+      padding: 0.6rem 1rem;
+      border-radius: 0 6px 6px 0;
+      color: #bbf7d0;
+      font-size: 0.85rem;
+      margin-top: 0.8rem;
+    }
+
+    .last-updated { color: #475569; font-size: 0.8rem; margin-top: 3rem; text-align: right; }
+
+    /* ViT section */
+    .vit-tab { transition: color 0.2s, border-color 0.2s; }
+    .vit-tab.active { color: #7dd3fc !important; border-bottom-color: #38bdf8 !important; }
+    .vit-tab:hover { color: #bae6fd !important; }
+
+    .pipe-flow {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin: 0.8rem 0;
+    }
+    .pipe-flow-v {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .pipe-node {
+      background: #0f2942;
+      border: 1px solid #1e4a7a;
+      border-radius: 6px;
+      padding: 0.45rem 0.8rem;
+      font-size: 0.82rem;
+      color: #bae6fd;
+      cursor: pointer;
+      text-align: center;
+      transition: background 0.15s, border-color 0.15s;
+      line-height: 1.3;
+    }
+    .pipe-node:hover { background: #1a3a5c; border-color: #38bdf8; }
+    .pipe-node.active { background: #0c3562; border-color: #38bdf8; box-shadow: 0 0 0 2px #1e4a7a; }
+    .pipe-node.purple { background: #1e1040; border-color: #6d28d9; color: #c4b5fd; }
+    .pipe-node.purple:hover { background: #2d1a60; border-color: #a78bfa; }
+    .pipe-node.purple.active { background: #2d1a60; border-color: #a78bfa; box-shadow: 0 0 0 2px #4c1d95; }
+    .pipe-node.green { background: #0a2a1a; border-color: #166534; color: #86efac; }
+    .pipe-node.green:hover { background: #14402a; border-color: #4ade80; }
+    .pipe-node.green.active { background: #14402a; border-color: #4ade80; box-shadow: 0 0 0 2px #166534; }
+    .pipe-arrow { color: #334155; font-size: 1.2rem; }
+    .pipe-arrow-v { color: #334155; font-size: 1.2rem; line-height: 1; }
+
+    .pipe-detail-box {
+      display: none;
+      background: #0a0f1e;
+      border: 1px solid #1e3a5f;
+      border-radius: 6px;
+      padding: 0.8rem 1rem;
+      font-size: 0.83rem;
+      color: #cbd5e1;
+      margin: 0.5rem 0;
+      line-height: 1.6;
+    }
+    .pipe-detail-box.visible { display: block; }
+    .pipe-detail-box strong { color: #7dd3fc; }
+
+    .vit-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 1rem;
+    }
+    .vit-pro, .vit-con {
+      font-size: 0.78rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 20px;
+    }
+    .vit-pro { background: #0a2a1a; border: 1px solid #166534; color: #86efac; }
+    .vit-con { background: #2a0a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Manufacturing Anomaly Detection</h1>
+  <p class="subtitle">Re-evaluation Pipeline Plan — Western Digital Genesis Line</p>
+
+  <!-- Context -->
+  <h2>Context</h2>
+  <div class="card">
+    <p>Replacing the existing <strong>Auto Vision Setting Tool</strong> with a lighter re-evaluation pipeline. Current pipeline is overkill. New one targets the specific case where the existing ML model has already flagged a defect with a red bounding box — we want to re-score it rather than blindly accept the flag.</p>
+  </div>
+
+  <!-- Core Idea -->
+  <h2>The Core Idea</h2>
+  <div class="card">
+    <ol style="padding-left:1.4rem; color:#cbd5e1; line-height:2;">
+      <li>Take defect region (bounding box) output from existing model</li>
+      <li>Crop that region from the <strong>raw image</strong> (not the labeled result image)</li>
+      <li>Compare crop against gallery of known-good (pass) images</li>
+      <li>Produce anomaly score → auto-pass / auto-fail / flag for human review</li>
+    </ol>
+    <div class="highlight">Keyword: <strong>anomaly score via image similarity / anomaly detection</strong></div>
+  </div>
+
+  <!-- Problems -->
+  <h2>Problems With Naive Similarity Approach</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>Problem</th><th>Severity</th><th>Fix</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Location mismatch — comparing crop to wrong region of reference</td>
+          <td><span class="sev-critical">Critical</span></td>
+          <td>Gallery must store crops from the <strong>same region/position</strong> across pass images</td>
+        </tr>
+        <tr>
+          <td>Bbox coordinate space mismatch — result image may be resized/padded vs raw</td>
+          <td><span class="sev-critical">Critical</span></td>
+          <td>Use raw bbox coords from model output, not pixel coords from visualized image</td>
+        </tr>
+        <tr>
+          <td>Fixed threshold is fragile — breaks with lighting/camera drift</td>
+          <td><span class="sev-critical">Critical</span></td>
+          <td>Use dynamic threshold or flag when input is out-of-distribution</td>
+        </tr>
+        <tr>
+          <td>Crop size inconsistency — different bbox sizes → different embeddings</td>
+          <td><span class="sev-high">High</span></td>
+          <td>Normalize: always crop fixed physical window (e.g. 100×100px) centered on bbox midpoint</td>
+        </tr>
+        <tr>
+          <td>ResNet embeddings not domain-aligned — trained on ImageNet, not surfaces</td>
+          <td><span class="sev-high">High</span></td>
+          <td>Fine-tune encoder or use PatchCore (builds memory bank from your own data)</td>
+        </tr>
+        <tr>
+          <td>No variance model — single threshold ignores natural pass variation</td>
+          <td><span class="sev-medium">Medium</span></td>
+          <td>Build distribution from 20–50+ pass samples per region, flag by distance from mean</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Decision Tree -->
+  <h2>Chosen Approach (Decision Tree)</h2>
+  <div class="card">
+    <div class="highlight" style="margin-bottom:1rem;">To be decided based on available pass images and imaging setup.</div>
+    <div class="decision-grid">
+      <div class="decision-item">
+        <div class="condition">If imaging is fixed (controlled camera + lighting, product doesn't shift):</div>
+        <div class="method">Classical Image Differencing</div>
+        <div class="desc">Align crop to reference template, subtract pixels, threshold residual. No ML, fully explainable, fastest.</div>
+      </div>
+      <div class="decision-item">
+        <div class="condition">If fewer than ~50 pass images per region:</div>
+        <div class="method">SPC on Handcrafted Features</div>
+        <div class="desc">Extract brightness, texture entropy, edge density. Fit multivariate normal distribution. Flag by Mahalanobis distance. No GPU needed, interpretable.</div>
+      </div>
+      <div class="decision-item">
+        <div class="condition">If 50–500 pass images and need pixel heatmap (explainable to QC managers):</div>
+        <div class="method">Autoencoder</div>
+        <div class="desc">Train on pass images only, flag by reconstruction error map. Shows <em>where</em> the anomaly is.</div>
+      </div>
+      <div class="decision-item">
+        <div class="condition">If 50–500 pass images and need best accuracy (score only):</div>
+        <div class="method">PatchCore (via <code>anomalib</code>)</div>
+        <div class="desc">Patch-level memory bank from pass images, nearest-neighbor distance at inference. State of the art for pass-only anomaly detection.</div>
+      </div>
+      <div class="decision-item">
+        <div class="condition">Quick prototype / zero data:</div>
+        <div class="method">CLIP Zero-Shot</div>
+        <div class="desc">Compare crop embedding against text prompts ("defect-free surface" vs "damaged surface"). No training. Less reliable but useful for early testing.</div>
+      </div>
+      <div class="decision-item">
+        <div class="condition">Long-term (add on top of any above):</div>
+        <div class="method">Human-in-the-Loop Active Learning</div>
+        <div class="desc">Log every human decision on gray-zone items. After ~200–300 reviews, fine-tune small classifier on hard cases only. Gray zone shrinks over time.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pipeline Architecture -->
+  <h2>Pipeline Architecture</h2>
+  <div class="card">
+<pre>Raw image + bbox coords (from existing model)
+            │
+            ▼
+[1] Crop ROI
+    - Use raw image, NOT the labeled result image
+    - Normalize crop to fixed physical window centered on bbox midpoint
+    - Verify bbox coordinate space matches raw image resolution
+
+            │
+            ▼
+[2] Feature extraction / comparison
+    - Method depends on approach chosen above
+    - PatchCore: patch features → nearest neighbor in memory bank
+    - Autoencoder: reconstruct → compute pixel-wise error
+    - SPC: extract handcrafted features → Mahalanobis distance
+    - Classical: align → subtract → threshold residual
+
+            │
+            ▼
+[3] Anomaly score (0.0 = normal, 1.0 = anomalous)
+
+            │
+     ┌──────┴──────┐
+     │             │
+  score &lt; fail   score &gt; pass
+  threshold      threshold
+     │             │
+  AUTO FAIL    AUTO PASS
+
+     └──── gray zone ────┐
+                         │
+                   FLAG FOR HUMAN REVIEW
+                   (log decision for active learning)</pre>
+  </div>
+
+  <!-- Stack -->
+  <h2>Recommended Stack</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Component</th><th>Tool</th></tr></thead>
+      <tbody>
+        <tr><td>Crop + image ops</td><td><code>OpenCV</code></td></tr>
+        <tr><td>PatchCore / EfficientAD</td><td><code>anomalib</code> (OpenVINO)</td></tr>
+        <tr><td>Autoencoder</td><td>PyTorch (small custom model)</td></tr>
+        <tr><td>Feature extraction (SPC)</td><td>torchvision ResNet50 pretrained, or manual (cv2)</td></tr>
+        <tr><td>Fast gallery search</td><td><code>faiss</code></td></tr>
+        <tr><td>Similarity metric</td><td><code>sklearn.metrics.pairwise.cosine_similarity</code></td></tr>
+        <tr><td>Deployment target</td><td>Windows PC with NVIDIA GPU on production line</td></tr>
+        <tr><td>Orchestration</td><td>Rust (egui/Tauri GUI) ↔ gRPC ↔ Python ML microservice</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Image Generation Prompts -->
+  <h2>Image Generation Prompts (Test Data)</h2>
+  <div class="card">
+    <h3>Pass images — defect-free reference gallery</h3>
+    <div class="prompt-block">Top-down macro photo of a flat industrial metal surface, uniform brushed
+aluminum texture, even lighting, no scratches, no discoloration, no marks.
+Shot from directly above, neutral grey background, photorealistic, 512x512.</div>
+    <div class="prompt-block">Close-up photo of a smooth injection-molded plastic panel, consistent matte
+finish, uniform color, no bubbles or cracks, factory clean, flat overhead
+shot, product photography style, sharp focus, 512x512.</div>
+
+    <h3>Defect images — for testing detection</h3>
+    <div class="prompt-block">Top-down macro photo of a flat metal surface with a visible scratch defect —
+a dark irregular linear gouge running diagonally, surrounded by normal brushed
+aluminum texture. Defect covers ~20% of image. Red bounding box drawn around
+the defect region. 512x512.</div>
+    <div class="prompt-block">Overhead photo of a plastic panel with a dark blister/bubble defect — a raised
+discolored circular anomaly ~3cm wide. Rest of surface is clean and uniform.
+Red rectangular border highlights the defect. Macro photography, 512x512.</div>
+
+    <h3>Edge cases — gray zone, for threshold calibration</h3>
+    <div class="prompt-block">Overhead photo of a metal surface with a very faint surface mark — could be a
+minor scratch or a reflection artifact. Slightly different texture in one small
+region, ambiguous whether it is a defect. No bounding box. 512x512.</div>
+
+    <div class="tip">Tip: Add <em>"The defect is centered in the image, plain dark background border around edges, consistent fixed camera angle."</em> — makes bbox cropping predictable.</div>
+  </div>
+
+  <!-- ViT Exploration -->
+  <h2>Vision Transformer — End-to-End Exploration</h2>
+  <div class="card" style="padding:0; overflow:hidden;">
+
+    <!-- Tab bar -->
+    <div style="display:flex; border-bottom:1px solid #0f172a; background:#162032;">
+      <button class="vit-tab active" data-tab="a" style="flex:1; padding:0.7rem; background:none; border:none; color:#7dd3fc; font-size:0.85rem; font-weight:600; cursor:pointer; border-bottom:2px solid #38bdf8;">A — DINOv2 + PatchCore</button>
+      <button class="vit-tab" data-tab="b" style="flex:1; padding:0.7rem; background:none; border:none; color:#64748b; font-size:0.85rem; font-weight:600; cursor:pointer; border-bottom:2px solid transparent;">B — Two-Stage Global+Local</button>
+      <button class="vit-tab" data-tab="c" style="flex:1; padding:0.7rem; background:none; border:none; color:#64748b; font-size:0.85rem; font-weight:600; cursor:pointer; border-bottom:2px solid transparent;">C — Full ViT End-to-End</button>
+    </div>
+
+    <!-- Tab A -->
+    <div class="vit-panel" id="vit-a" style="padding:1.2rem 1.5rem;">
+      <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:1rem;">Drop-in upgrade to existing pipeline. Replace ResNet50 backbone with DINOv2. Same PatchCore flow, much stronger features.</p>
+      <div class="pipe-flow" id="pipe-a">
+        <div class="pipe-node" data-detail="a1">Raw Image + BBox</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="a2">Crop ROI</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="a3">DINOv2 Encoder</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="a4">Patch Memory Bank</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="a5">Anomaly Score</div>
+      </div>
+      <div class="pipe-detail-box" id="detail-a1"><strong>Raw Image + BBox</strong><br>Output from existing ML model. Use raw image coords — not coords from visualized/resized result image.</div>
+      <div class="pipe-detail-box" id="detail-a2"><strong>Crop ROI</strong><br>Normalize to fixed physical window (e.g. 100×100px) centered on bbox midpoint. Ensures consistent embedding size.</div>
+      <div class="pipe-detail-box" id="detail-a3"><strong>DINOv2 Encoder</strong><br>Self-supervised ViT (Meta). No fine-tuning needed — produces strong patch-level features from <code>facebook/dinov2-base</code>. Processes crop at 224×224 (upsample small crops). Patch size: 14×14px tokens.</div>
+      <div class="pipe-detail-box" id="detail-a4"><strong>Patch Memory Bank</strong><br>PatchCore: extract features from all pass images, subsample with greedy coreset. At inference, compute nearest-neighbor distance in feature space (via <code>faiss</code>).</div>
+      <div class="pipe-detail-box" id="detail-a5"><strong>Anomaly Score</strong><br>Max patch distance = image-level score. Per-patch distances = pixel heatmap. Score → AUTO PASS / AUTO FAIL / GRAY ZONE.</div>
+      <div class="vit-meta">
+        <div class="vit-pro">Strong features, no fine-tuning</div>
+        <div class="vit-pro">Pixel heatmap for QC explainability</div>
+        <div class="vit-pro">Minimal pipeline change</div>
+        <div class="vit-con">Small crops (&lt;100px) lose ViT advantage</div>
+        <div class="vit-con">Heavier than ResNet50 (~330MB model)</div>
+      </div>
+    </div>
+
+    <!-- Tab B -->
+    <div class="vit-panel" id="vit-b" style="padding:1.2rem 1.5rem; display:none;">
+      <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:1rem;">Two parallel branches. Global branch captures full-image context (where on the part, surrounding region). Local branch scores the crop. Combined signal = final decision.</p>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1rem;">
+        <div>
+          <div style="color:#a78bfa; font-size:0.78rem; font-weight:600; margin-bottom:0.5rem; text-transform:uppercase; letter-spacing:0.05em;">Branch 1 — Global Context</div>
+          <div class="pipe-flow-v">
+            <div class="pipe-node purple" data-detail="b1">Full Raw Image</div>
+            <div class="pipe-arrow-v">↓</div>
+            <div class="pipe-node purple" data-detail="b2">ViT / DINOv2<br><small>CLS Token</small></div>
+            <div class="pipe-arrow-v">↓</div>
+            <div class="pipe-node purple" data-detail="b3">Global Embedding<br><small>768-dim vector</small></div>
+          </div>
+        </div>
+        <div>
+          <div style="color:#34d399; font-size:0.78rem; font-weight:600; margin-bottom:0.5rem; text-transform:uppercase; letter-spacing:0.05em;">Branch 2 — Local Crop</div>
+          <div class="pipe-flow-v">
+            <div class="pipe-node green" data-detail="b4">Crop ROI</div>
+            <div class="pipe-arrow-v">↓</div>
+            <div class="pipe-node green" data-detail="b5">DINOv2 Patches<br><small>or PatchCore</small></div>
+            <div class="pipe-arrow-v">↓</div>
+            <div class="pipe-node green" data-detail="b6">Local Score<br><small>0.0 – 1.0</small></div>
+          </div>
+        </div>
+      </div>
+      <div style="text-align:center; color:#64748b; font-size:0.85rem; margin:0.5rem 0;">↓ combine ↓</div>
+      <div class="pipe-flow" style="justify-content:center;">
+        <div class="pipe-node" data-detail="b7">Fusion Layer</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="b8">Final Score</div>
+      </div>
+      <div class="pipe-detail-box" id="detail-b1"><strong>Full Raw Image</strong><br>Entire image fed to ViT — not just the crop. Captures product position, surrounding area, lighting context.</div>
+      <div class="pipe-detail-box" id="detail-b2"><strong>ViT CLS Token</strong><br>DINOv2's CLS token = global image summary embedding. Encodes "what region of the part, what surrounding context." No spatial info lost.</div>
+      <div class="pipe-detail-box" id="detail-b3"><strong>Global Embedding</strong><br>768-dim (DINOv2-base) or 1024-dim (large). Store one embedding per pass image. Build distribution (mean ± covariance). Flag if test embedding is out-of-distribution.</div>
+      <div class="pipe-detail-box" id="detail-b4"><strong>Crop ROI</strong><br>Same as Architecture A — normalized fixed-window crop centered on bbox.</div>
+      <div class="pipe-detail-box" id="detail-b5"><strong>Local Features</strong><br>DINOv2 patch features on crop, or PatchCore memory bank. Produces local anomaly score.</div>
+      <div class="pipe-detail-box" id="detail-b6"><strong>Local Score</strong><br>0.0 = normal crop, 1.0 = anomalous crop. Same as Architecture A output.</div>
+      <div class="pipe-detail-box" id="detail-b7"><strong>Fusion Layer</strong><br>Options: (1) weighted sum — <code>final = α·local + (1-α)·global_ood</code>. (2) learned gating — train a tiny MLP on global embedding to modulate local score. (3) rule-based: if global OOD score high → escalate to GRAY regardless of local.</div>
+      <div class="pipe-detail-box" id="detail-b8"><strong>Final Score</strong><br>Combined signal. Example: local says PASS but global says image looks unusual → escalate to GRAY. Reduces false passes from lighting drift or positioning shift.</div>
+      <div class="vit-meta">
+        <div class="vit-pro">Catches false passes from position/lighting shift</div>
+        <div class="vit-pro">Global OOD detection = robustness to distribution drift</div>
+        <div class="vit-pro">Explainable: two separate scores, auditable</div>
+        <div class="vit-con">More complex pipeline — two inference passes</div>
+        <div class="vit-con">Fusion weight α needs calibration on real data</div>
+        <div class="vit-con">Only useful if defect meaning varies by position</div>
+      </div>
+    </div>
+
+    <!-- Tab C -->
+    <div class="vit-panel" id="vit-c" style="padding:1.2rem 1.5rem; display:none;">
+      <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:1rem;">ViT processes full image. Attention maps localize anomalous regions — no explicit crop or bbox needed. Replaces the existing model's flagging role.</p>
+      <div class="pipe-flow" id="pipe-c">
+        <div class="pipe-node" data-detail="c1">Full Raw Image</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="c2">DINOv2 / ViT<br><small>Self-Attention</small></div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="c3">Attention Rollout<br><small>Heatmap</small></div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="c4">Anomaly Regions</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-node" data-detail="c5">Score + BBox</div>
+      </div>
+      <div class="pipe-detail-box" id="detail-c1"><strong>Full Raw Image</strong><br>No preprocessing crop. Full resolution image resized to 518×518 (DINOv2 optimal) or 224×224.</div>
+      <div class="pipe-detail-box" id="detail-c2"><strong>DINOv2 Self-Attention</strong><br>Each layer computes attention between all patch tokens. DINO's self-supervised training makes attention heads naturally focus on semantically meaningful regions — known to highlight object/defect boundaries without labels.</div>
+      <div class="pipe-detail-box" id="detail-c3"><strong>Attention Rollout</strong><br>Aggregate attention across all heads and layers → per-patch relevance map. Upscale to original resolution = pixel-level heatmap. Hot regions = ViT focused here. Useful for: QC managers, auditing, active learning labels.</div>
+      <div class="pipe-detail-box" id="detail-c4"><strong>Anomaly Regions</strong><br>Threshold attention heatmap → candidate anomaly masks. Compare patch features at hot regions vs memory bank of pass images. High distance = anomalous patch.</div>
+      <div class="pipe-detail-box" id="detail-c5"><strong>Score + BBox</strong><br>Image-level anomaly score + auto-generated bounding box from attention mask. Can feed back into existing workflow as bbox source — replaces or validates existing model's bbox.</div>
+      <div class="highlight" style="margin-top:1rem; font-size:0.85rem;">Note: Arch C is the most ambitious — it replaces the existing model's detection role, not just the re-scoring role. Validate Arch A or B first.</div>
+      <div class="vit-meta">
+        <div class="vit-pro">No dependency on existing model's bbox quality</div>
+        <div class="vit-pro">Pixel heatmap inherent — no extra step</div>
+        <div class="vit-pro">DINO attention = strong unsupervised localization</div>
+        <div class="vit-con">Replaces more of the existing pipeline — higher risk</div>
+        <div class="vit-con">Needs more pass images to build reliable memory bank</div>
+        <div class="vit-con">Attention ≠ anomaly score — requires calibration</div>
+      </div>
+    </div>
+
+  </div><!-- end card -->
+
+  <!-- Comparison table -->
+  <div class="card">
+    <h3 style="margin-top:0;">Architecture Comparison</h3>
+    <table>
+      <thead><tr><th></th><th>A — DINOv2+PatchCore</th><th>B — Two-Stage</th><th>C — Full ViT</th></tr></thead>
+      <tbody>
+        <tr><td>Pipeline change</td><td>Minimal</td><td>Moderate</td><td>Major</td></tr>
+        <tr><td>Pass images needed</td><td>50–500</td><td>50–500</td><td>100+</td></tr>
+        <tr><td>Inference speed</td><td>Fast</td><td>2× slower</td><td>Fast (one pass)</td></tr>
+        <tr><td>Heatmap output</td><td>Yes (PatchCore)</td><td>Yes (local branch)</td><td>Yes (attention)</td></tr>
+        <tr><td>Handles drift</td><td>Weak</td><td>Strong (global OOD)</td><td>Moderate</td></tr>
+        <tr><td>Needs bbox from model</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+        <tr><td>Recommended start</td><td style="color:#4ade80; font-weight:600;">Yes</td><td>After A validated</td><td>Long-term</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="last-updated">Last updated: <span id="ts"></span></p>
+</div>
+
+<script>
+  document.getElementById('ts').textContent = new Date().toLocaleString();
+
+  // ViT tab switching
+  document.querySelectorAll('.vit-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.vit-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.vit-panel').forEach(p => p.style.display = 'none');
+      btn.classList.add('active');
+      document.getElementById('vit-' + btn.dataset.tab).style.display = 'block';
+      // close all detail boxes when switching tab
+      document.querySelectorAll('.pipe-detail-box').forEach(d => d.classList.remove('visible'));
+      document.querySelectorAll('.pipe-node').forEach(n => n.classList.remove('active'));
+    });
+  });
+
+  // Clickable pipeline nodes → show detail below
+  document.querySelectorAll('.pipe-node').forEach(node => {
+    node.addEventListener('click', () => {
+      const detailId = 'detail-' + node.dataset.detail;
+      const detail = document.getElementById(detailId);
+      if (!detail) return;
+      const isOpen = detail.classList.contains('visible');
+      // close all in current panel
+      const panel = node.closest('.vit-panel');
+      panel.querySelectorAll('.pipe-detail-box').forEach(d => d.classList.remove('visible'));
+      panel.querySelectorAll('.pipe-node').forEach(n => n.classList.remove('active'));
+      if (!isOpen) {
+        detail.classList.add('visible');
+        node.classList.add('active');
+        detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    });
+  });
+</script>
+</body>
+</html>

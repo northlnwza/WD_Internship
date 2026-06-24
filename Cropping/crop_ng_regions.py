@@ -26,10 +26,12 @@ _is_border_sliver). This yields tight, defect-focused crops instead of the whole
 orange box can be recovered at all (e.g. faint diffuse contamination that the machine
 drew no box around), we fall back to cropping the whole red zone.
 
-For each defect box we crop the full-resolution RAW image (raw is exactly 2x the result
-image), padded outward per dimension by PAD_FRAC * box_width (left/right) and
-PAD_FRAC * box_height (top/bottom) so a defect touching the border is still visible,
-save the crop, and save a side-by-side validation figure:
+For each defect box we crop a fixed CROP_SIZE × CROP_SIZE window from the full-resolution
+RAW image, centred on the defect centroid. If the window would extend beyond the raw image
+boundary it is shifted inward along that axis so it stays exactly CROP_SIZE × CROP_SIZE
+(unless the raw image itself is smaller than CROP_SIZE in that dimension). This gives every
+crop a uniform size for YOLO training while keeping the defect centered.
+Save the crop and a side-by-side validation figure:
 
     [ downscaled RAW with a BLUE rectangle marking the crop border ] | [ the crop ]
 
@@ -56,7 +58,7 @@ OUT_DIAG_DIR     = "./debug_out/diag"
 IMAGE_EXT        = ".jpg"
 FAIL_STATUS      = "Fail"
 
-PAD_FRAC         = 0.10         # crop padding per side: 0.10 * box_width (x) and 0.10 * box_height (y)
+CROP_SIZE        = 640          # fixed crop window (RAW pixels); centred on defect centroid
 
 # Red NG-box HSV. Red wraps hue 0/180; floored away from orange (hue >=5) so the
 # AVI's orange defect boxes are not mistaken for red user boxes.
@@ -93,7 +95,7 @@ DEFECT_MIN_WH    = 10
 # removes everything (a real box that fills a thin zone touches the border), retry on the
 # unframed zone and drop only pure border slivers via _is_border_sliver.
 PERIM_FRAME      = 4            # px frame blanked at the red-zone border (the outline bleed)
-SLIVER_EDGE_TOL  = 4            # px: "flush" against a red box edge
+SLIVER_EDGE_TOL  = 1            # px: "flush" against frame inner edge (PERIM_FRAME already blanked the 4px bleed)
 SLIVER_FRAC      = 0.50         # sliver spans < this fraction of the perpendicular zone dim
 SLIVER_ASPECT    = 4.0          # sliver is at least this elongated (long/short side)
 
@@ -296,11 +298,24 @@ def main():
                     cv2.resize(diag, None, fx=0.5, fy=0.5))
 
         for i, (x, y, w, h, kind) in enumerate(boxes):
-            # crop region in RAW pixels, padded per dimension: PAD_FRAC * width (x), PAD_FRAC * height (y)
+            # fixed CROP_SIZE × CROP_SIZE window in RAW pixels, centred on defect centroid
             rx, ry, rw, rh = x * sx, y * sy, w * sx, h * sy
-            pad_x, pad_y = PAD_FRAC * rw, PAD_FRAC * rh
-            cx0 = int(max(0, rx - pad_x));          cy0 = int(max(0, ry - pad_y))
-            cx1 = int(min(raw_w, rx + rw + pad_x)); cy1 = int(min(raw_h, ry + rh + pad_y))
+            half = CROP_SIZE / 2
+            cx0 = int(rx + rw / 2 - half)
+            cy0 = int(ry + rh / 2 - half)
+            cx1 = cx0 + CROP_SIZE
+            cy1 = cy0 + CROP_SIZE
+            # shift inward if the window exceeds raw image bounds (never shrink the window)
+            if cx0 < 0:
+                cx1 -= cx0; cx0 = 0
+            if cy0 < 0:
+                cy1 -= cy0; cy0 = 0
+            if cx1 > raw_w:
+                cx0 -= cx1 - raw_w; cx1 = raw_w
+            if cy1 > raw_h:
+                cy0 -= cy1 - raw_h; cy1 = raw_h
+            # clamp in case the raw image is smaller than CROP_SIZE
+            cx0 = max(0, cx0); cy0 = max(0, cy0)
             crop = raw_img[cy0:cy1, cx0:cx1]
             if crop.size == 0:
                 print(f"  ng{i}: empty crop, skipping")
@@ -326,7 +341,7 @@ def main():
             plt.tight_layout()
             fig.savefig(os.path.join(OUT_SIDE_DIR, f"{serial}_ng{i}.png"), dpi=90)
             plt.close(fig)
-            print(f"  ng{i} [{kind}]: result=({x},{y},{w},{h}) -> crop raw=({cx0},{cy0})-({cx1},{cy1})"
+            print(f"  ng{i} [{kind}]: result=({x},{y},{w},{h}) -> fixed crop raw=({cx0},{cy0})-({cx1},{cy1})"
                   f"  {crop.shape[1]}x{crop.shape[0]} px")
 
 

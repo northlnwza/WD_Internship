@@ -1,0 +1,46 @@
+# Images folder
+Images/
+Cropping/images/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+.env
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*~
+
+# Logs & temp
+*.log
+*.tmp
+*.bak
+
+# Environment variables
+.env
+.env.local
+.env.*.local

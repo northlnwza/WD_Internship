@@ -1,0 +1,32 @@
+data:
+  labels_dir: "labels"              # folder with .png + .txt pairs (YOLO polygon)
+  classes:
+    0: "contam"                     # must match X-AnyLabeling class order
+    1: "scratch"
+    2: "other"                      # defined in schema; 0 instances drawn yet
+  train_ratio: 0.80                 # 80% train / 20% val (tiny dataset → more train)
+  seed: 42
+  keep_backgrounds: true            # include empty-label images as negatives (cuts false positives)
+
+model:
+  yolo_model: "yolov8n-seg.pt"      # yolov8n-seg | yolov8s-seg | yolov8m-seg
+  input_size: 640
+
+training:
+  epochs: 100
+  batch_size: 4
+  patience: 30                      # early stopping patience
+  output_dir: "models"
+
+  # --- small-dataset hardening (reduces overfit on few images) ---
+  freeze: 10                        # freeze backbone layers (0 = train all)
+  augment: true                     # enable augmentation block below
+  hsv_h: 0.015                      # hue jitter
+  hsv_s: 0.7                        # saturation jitter
+  hsv_v: 0.4                        # brightness jitter
+  degrees: 10.0                     # rotation (deg); defects are orientation-free
+  translate: 0.1                    # shift
+  scale: 0.5                        # zoom
+  fliplr: 0.5                       # horizontal flip prob
+  flipud: 0.5                       # vertical flip prob
+  mosaic: 1.0                       # mosaic aug

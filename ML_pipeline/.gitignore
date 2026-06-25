@@ -1,0 +1,35 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---- Model weights ----
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# ---- Dataset (raw labels + generated YOLO split) ----
+labels/
+yolo_data/
+
+# ---- Training run artifacts (curves, batches, weights) ----
+models/
+
+# ---- Sample test images ----
+sample_test/
+
+# ---- Inference outputs ----
+sample_test_output/
+test_result/
+test_result_output/
+
+# ---- OS / editor cruft ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

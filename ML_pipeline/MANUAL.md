@@ -5,9 +5,10 @@
 
 ## Overview
 
-This pipeline trains a **YOLOv8 segmentation model** to detect and classify two types of surface defects:
+This pipeline trains a **YOLOv8 segmentation model** to detect and classify surface defects:
 - **Contam** (class 0) — contamination
 - **Scratch** (class 1) — scratch marks
+- **Other** (class 2) — other defects
 
 Input: images labeled with X-AnyLabeling (YOLO polygon format)
 Output: segmentation masks drawn on images with class label + confidence
@@ -54,6 +55,7 @@ class_id  x1 y1  x2 y2  x3 y3  ...  xn yn
 - Coordinates are **normalized** (0.0 to 1.0)
 - `class_id = 0` → contam
 - `class_id = 1` → scratch
+- `class_id = 2` → other
 - Empty `.txt` file = image examined, no defect found. Kept as a **background image** (negative sample — reduces false positives). Set `data.keep_backgrounds: false` in config.yaml to skip them instead.
 
 ---
@@ -66,6 +68,7 @@ data:
   classes:
     0: "contam"            # must match X-AnyLabeling class order
     1: "scratch"
+    2: "other"
   train_ratio: 0.80        # 80% train, 20% val
   seed: 42                 # random seed for reproducible splits
   keep_backgrounds: true   # keep empty-label images as negatives

@@ -8,11 +8,11 @@ Layout (the two trees mirror each other):
 
 A file's SN is the first underscore-delimited token of its name:
     Fail  name:  ZQHAJMSE_20260618092445_ST5_TOP_EC15_Fail.jpg  -> SN = ZQHAJMSE
-    Image name:  WBGRNHTP_20260622194626_ST5_TOP_EC1.jpg        -> SN = WBGRNHTP
+    Image name:  WBGRNHTP_20260622194626_ST5_TOP    _EC1.jpg        -> SN = WBGRNHTP
 
 Only the SN is used for matching. The copied files come from the Image tree
 (names without "_Fail") and are placed, keeping their Image name, into:
-    Image\<Station>\<YYYYMMDD>\fail_copy
+    Fail\<Station>\<YYYYMMDD>\failed_raw
 """
 
 import argparse
@@ -59,19 +59,16 @@ def process_station(root: Path, station: str, dry_run: bool) -> int:
         ]
         matches = [f for f in img_pics if sn_of(f) in fail_sns]
 
-        dest_root = img_day / "fail_copy"
+        dest_root = day_dir / "failed_raw"
         copied = 0
         for f in matches:
-            # Mirror the file's location under img_day inside fail_copy so two
-            # same-named files in different subfolders never overwrite each other.
-            rel = f.relative_to(img_day)
-            dest = dest_root / rel
+            dest = dest_root / f.name
             if dry_run:
                 print(f"[would copy] {f} -> {dest}")
             else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest_root.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(f, dest)
-                print(f"  copied {rel}  (SN {sn_of(f)})")
+                print(f"  copied {f.name}  (SN {sn_of(f)})")
             copied += 1
 
         total_copied += copied

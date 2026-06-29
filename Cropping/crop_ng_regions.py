@@ -36,8 +36,8 @@ Save the crop and a side-by-side validation figure:
     [ downscaled RAW with a BLUE rectangle marking the crop border ] | [ the crop ]
 
 Outputs (under debug_out/):
-    crops/{serial}_ng{i}.png        the saved RAW crop (the "data")
-    sidebyside/{serial}_ng{i}.png   raw-with-blue-border | crop
+    crop/{station}-{view}/{serial}_{date}_{station}-{view}_{i}.png   the saved RAW crop (the "data")
+    sidebyside/{serial}_{date}_{zone}-{view}_{i}.png   raw-with-blue-border | crop
     diag/{serial}_detection.png     downscaled result + legend, with the box this script crops
 """
 
@@ -52,7 +52,7 @@ import matplotlib.pyplot as plt
 # ---- Config -----------------------------------------------------------------
 RAW_IMAGE_DIR    = "./images/raw"
 RESULT_IMAGE_DIR = "./images/result"
-OUT_CROP_DIR     = "./debug_out/crops"
+OUT_CROP_BASE    = r"C:\Users\7364250\avi re-inspection\crop"
 OUT_SIDE_DIR     = "./debug_out/sidebyside"
 OUT_DIAG_DIR     = "./debug_out/diag"
 IMAGE_EXT        = ".jpg"
@@ -239,7 +239,10 @@ def discover_fail_results():
         base = "_".join(parts[:-1])
         raw_path = os.path.join(RAW_IMAGE_DIR, base + IMAGE_EXT)
         if os.path.exists(raw_path):
-            recs.append((parts[0], raw_path, result_path))
+            date = parts[1][:8]
+            zone = parts[2]
+            view = parts[3]
+            recs.append((parts[0], date, zone, view, raw_path, result_path))
     return recs
 
 
@@ -267,10 +270,10 @@ def _draw_diag_legend(img):
 
 
 def main():
-    for d in (OUT_CROP_DIR, OUT_SIDE_DIR, OUT_DIAG_DIR):
+    for d in (OUT_SIDE_DIR, OUT_DIAG_DIR):
         os.makedirs(d, exist_ok=True)
 
-    for serial, raw_path, result_path in discover_fail_results():
+    for serial, date, zone, view, raw_path, result_path in discover_fail_results():
         result_img = cv2.imread(result_path)
         raw_img = cv2.imread(raw_path)
         if result_img is None or raw_img is None:
@@ -318,10 +321,13 @@ def main():
             cx0 = max(0, cx0); cy0 = max(0, cy0)
             crop = raw_img[cy0:cy1, cx0:cx1]
             if crop.size == 0:
-                print(f"  ng{i}: empty crop, skipping")
+                print(f"  {i}: empty crop, skipping")
                 continue
 
-            cv2.imwrite(os.path.join(OUT_CROP_DIR, f"{serial}_ng{i}.png"), crop)
+            fname = f"{serial}_{date}_{zone}-{view}_{i}"
+            crop_dir = os.path.join(OUT_CROP_BASE, f"{zone}-{view}")
+            os.makedirs(crop_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(crop_dir, f"{fname}.png"), crop)
 
             # side-by-side: raw (downscaled) with BLUE crop border (+ defect box) | the crop
             box_col = (0, 140, 255) if kind == "tight" else (0, 0, 255)
@@ -335,13 +341,13 @@ def main():
             axes[0].imshow(cv2.cvtColor(disp_small, cv2.COLOR_BGR2RGB))
             axes[0].set_title(f"{serial}  RAW  (blue = crop border, {'orange = defect box' if kind == 'tight' else 'red = NG zone fallback'})")
             axes[1].imshow(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-            axes[1].set_title(f"crop ng{i} [{kind}]   {crop.shape[1]}x{crop.shape[0]} px")
+            axes[1].set_title(f"crop {i} [{kind}]   {crop.shape[1]}x{crop.shape[0]} px")
             for ax in axes:
                 ax.axis("off")
             plt.tight_layout()
-            fig.savefig(os.path.join(OUT_SIDE_DIR, f"{serial}_ng{i}.png"), dpi=90)
+            fig.savefig(os.path.join(OUT_SIDE_DIR, f"{fname}.png"), dpi=90)
             plt.close(fig)
-            print(f"  ng{i} [{kind}]: result=({x},{y},{w},{h}) -> fixed crop raw=({cx0},{cy0})-({cx1},{cy1})"
+            print(f"  {i} [{kind}]: result=({x},{y},{w},{h}) -> fixed crop raw=({cx0},{cy0})-({cx1},{cy1})"
                   f"  {crop.shape[1]}x{crop.shape[0]} px")
 
 

@@ -52,7 +52,7 @@ import matplotlib.pyplot as plt
 # ---- Config -----------------------------------------------------------------
 RAW_IMAGE_DIR    = "./images/raw"
 RESULT_IMAGE_DIR = "./images/result"
-OUT_CROP_BASE    = r"C:\Users\7364250\avi re-inspection\crop"
+OUT_CROP_BASE    = "./crop"
 OUT_SIDE_DIR     = "./debug_out/sidebyside"
 OUT_DIAG_DIR     = "./debug_out/diag"
 IMAGE_EXT        = ".jpg"

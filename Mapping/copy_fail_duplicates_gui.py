@@ -65,7 +65,8 @@ def collect_work(root: Path, station: str):
         dest_root = day_dir / "failed_raw"
 
         for f in matches:
-            pairs.append((f, dest_root / f.name))
+            rel = f.relative_to(img_day)
+            pairs.append((f, dest_root / rel))
 
         day_summaries.append(
             f"  {day_dir.name}: {len(fail_sns)} Fail SNs, "

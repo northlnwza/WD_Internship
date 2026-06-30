@@ -62,13 +62,16 @@ def process_station(root: Path, station: str, dry_run: bool) -> int:
         dest_root = day_dir / "failed_raw"
         copied = 0
         for f in matches:
-            dest = dest_root / f.name
+            rel = f.relative_to(img_day)
+            dest = dest_root / rel
             if dry_run:
                 print(f"[would copy] {f} -> {dest}")
             else:
-                dest_root.mkdir(parents=True, exist_ok=True)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.exists():
+                    dest.unlink()
                 shutil.copy2(f, dest)
-                print(f"  copied {f.name}  (SN {sn_of(f)})")
+                print(f"  copied {rel}  (SN {sn_of(f)})")
             copied += 1
 
         total_copied += copied

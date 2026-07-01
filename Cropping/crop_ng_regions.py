@@ -49,7 +49,7 @@ import matplotlib
 matplotlib.use("Agg")          # headless: save figures to files
 import matplotlib.pyplot as plt
 
-# ---- Config -----------------------------------------------------------------
+# ---- Config ----------------------------------------------------------------
 RAW_IMAGE_DIR    = "./images/raw"
 RESULT_IMAGE_DIR = "./images/result"
 OUT_CROP_BASE    = "./crop"

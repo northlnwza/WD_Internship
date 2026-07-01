@@ -1,32 +1,39 @@
 data:
   labels_dir: "labels"              # folder with .png + .txt pairs (YOLO polygon)
   classes:
-    0: "contam"                     # must match X-AnyLabeling class order
-    1: "scratch"
-    2: "other"                      # defined in schema; 0 instances drawn yet
-  train_ratio: 0.80                 # 80% train / 20% val (tiny dataset → more train)
+    0: "comtam_dust"                     # must match X-AnyLabeling class order
+    1: "comtam_stain"
+    2: "comtam_x"  
+    3: "scratch_dent"   
+    4: "scratch_line"
+    5: "other"                 # defined in schema; 0 instances drawn yet
+  train_ratio: 0.70                 # 70% train / 15% val / 15% test
+  val_ratio:   0.15
   seed: 42
   keep_backgrounds: true            # include empty-label images as negatives (cuts false positives)
 
 model:
-  yolo_model: "yolov8n-seg.pt"      # yolov8n-seg | yolov8s-seg | yolov8m-seg
+  yolo_model: "yolov8m-seg.pt"      # yolov8n-seg | yolov8s-seg | yolov8m-seg
   input_size: 640
 
 training:
-  epochs: 100
-  batch_size: 4
-  patience: 30                      # early stopping patience
+  epochs: 300
+  batch_size: 32
+  patience: 50                      # early stopping patience
+  cos_lr: true                      # cosine LR decay — smoother convergence
   output_dir: "models"
 
   # --- small-dataset hardening (reduces overfit on few images) ---
   freeze: 10                        # freeze backbone layers (0 = train all)
   augment: true                     # enable augmentation block below
-  hsv_h: 0.015                      # hue jitter
+  hsv_h: 0.05                       # hue jitter
   hsv_s: 0.7                        # saturation jitter
   hsv_v: 0.4                        # brightness jitter
-  degrees: 10.0                     # rotation (deg); defects are orientation-free
+  degrees: 20.0                     # rotation (deg); defects are orientation-free
   translate: 0.1                    # shift
   scale: 0.5                        # zoom
   fliplr: 0.5                       # horizontal flip prob
   flipud: 0.5                       # vertical flip prob
   mosaic: 1.0                       # mosaic aug
+  copy_paste: 0.3                   # paste defect polygons onto other images (great for seg)
+  mixup: 0.1                        # blend two images together (10% prob); conservative for seg

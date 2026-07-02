@@ -35,30 +35,31 @@ Save the crop and a side-by-side validation figure:
 
     [ downscaled RAW with a BLUE rectangle marking the crop border ] | [ the crop ]
 
-Outputs (under debug_out/):
-    crop/{station}-{view}/{serial}_{date}_{station}-{view}_{i}.png   the saved RAW crop (the "data")
-    sidebyside/{serial}_{date}_{zone}-{view}_{i}.png   raw-with-blue-border | crop
-    diag/{serial}_detection.png     downscaled result + legend, with the box this script crops
+Outputs:
+    crop/{station}-{view}/{serial}_{date}_{station}-{view}_{i}.png    the saved RAW crop (the "data")
+    debug_out/sidebyside/{serial}_{date}_{station}-{view}_{i}.png     raw-with-blue-border | crop
+    debug_out/diag/{serial}_detection.png    downscaled result + legend, with the box this script crops
 """
 
 import os
 import glob
+import multiprocessing
 import cv2
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")          # headless: save figures to files
-import matplotlib.pyplot as plt
 
-# ---- Config ----------------------------------------------------------------
+# ---- Config -----------------------------------------------------------------
 RAW_IMAGE_DIR    = "./images/raw"
 RESULT_IMAGE_DIR = "./images/result"
-OUT_CROP_BASE    = "./crop"
+OUT_CROP_DIR     = "./crop"
+TEST_MODE        = False           # True → saves into crop/{station}/test/
 OUT_SIDE_DIR     = "./debug_out/sidebyside"
 OUT_DIAG_DIR     = "./debug_out/diag"
 IMAGE_EXT        = ".jpg"
 FAIL_STATUS      = "Fail"
 
 CROP_SIZE        = 640          # fixed crop window (RAW pixels); centred on defect centroid
+SIDE_SCALE       = 0.28         # downscale of the RAW overview panel in the side-by-side figure
+NUM_WORKERS      = os.cpu_count() or 1   # units processed in parallel (each unit is independent)
 
 # Red NG-box HSV. Red wraps hue 0/180; floored away from orange (hue >=5) so the
 # AVI's orange defect boxes are not mistaken for red user boxes.
@@ -256,6 +257,22 @@ _LEGEND_LINES = [
 ]
 
 
+def _compose_side_by_side(left, right, left_title, right_title):
+    """[left | right] BGR panels padded to equal height on black, a title above each."""
+    gap = 12
+    h = max(left.shape[0], right.shape[0])
+
+    def _pad(img):
+        return cv2.copyMakeBorder(img, 0, h - img.shape[0], 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
+    panels = np.hstack([_pad(left), np.zeros((h, gap, 3), np.uint8), _pad(right)])
+    strip = np.zeros((40, panels.shape[1], 3), np.uint8)
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2
+    cv2.putText(strip, left_title, (8, 28), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+    cv2.putText(strip, right_title, (left.shape[1] + gap + 8, 28), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+    return np.vstack([strip, panels])
+
+
 def _draw_diag_legend(img):
     """Draw a semi-transparent explanatory header banner across the top of a diag image."""
     font, scale, thick, lh = cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2, 46
@@ -269,86 +286,96 @@ def _draw_diag_legend(img):
     return banner_h
 
 
+def process_unit(rec):
+    """Process one failed unit (detect, crop, write figures). Returns its log text;
+    runs in a worker process, so prints are collected and emitted by the parent."""
+    serial, date, zone, view, raw_path, result_path = rec
+    lines = []
+
+    result_img = cv2.imread(result_path)
+    raw_img = cv2.imread(raw_path)
+    if result_img is None or raw_img is None:
+        return f"[{serial}] could not read images, skipping"
+
+    res_h, res_w = result_img.shape[:2]
+    raw_h, raw_w = raw_img.shape[:2]
+    sx, sy = raw_w / res_w, raw_h / res_h          # RESULT -> RAW scale (== 2.0 here)
+
+    boxes = find_defect_boxes(result_img)
+    kinds = ", ".join(b[4] for b in boxes) or "none"
+    lines.append(f"[{serial}] {len(boxes)} defect box(es): {kinds}  (raw/result scale {sx:.2f}x{sy:.2f})")
+
+    diag = result_img.copy()
+    banner_h = _draw_diag_legend(diag)
+    for (x, y, w, h, kind) in boxes:
+        col = DIAG_TIGHT_COL if kind == "tight" else DIAG_ZONE_COL
+        label = "TIGHT DEFECT (cropped)" if kind == "tight" else "NG ZONE (fallback crop)"
+        cv2.rectangle(diag, (x, y), (x + w, y + h), col, 4)
+        # keep the label clear of the top banner: below the box if it sits under the banner
+        ly = y + h + 34 if y < banner_h + 24 else y - 12
+        cv2.putText(diag, label, (x, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.9, col, 2, cv2.LINE_AA)
+    cv2.imwrite(os.path.join(OUT_DIAG_DIR, f"{serial}_detection.png"),
+                cv2.resize(diag, None, fx=0.5, fy=0.5))
+
+    # downscaled once per unit; each box draws its borders on a copy of this
+    raw_small = cv2.resize(raw_img, None, fx=SIDE_SCALE, fy=SIDE_SCALE)
+
+    for i, (x, y, w, h, kind) in enumerate(boxes):
+        # fixed CROP_SIZE × CROP_SIZE window in RAW pixels, centred on defect centroid
+        rx, ry, rw, rh = x * sx, y * sy, w * sx, h * sy
+        half = CROP_SIZE / 2
+        cx0 = int(rx + rw / 2 - half)
+        cy0 = int(ry + rh / 2 - half)
+        cx1 = cx0 + CROP_SIZE
+        cy1 = cy0 + CROP_SIZE
+        # shift inward if the window exceeds raw image bounds (never shrink the window)
+        if cx0 < 0:
+            cx1 -= cx0; cx0 = 0
+        if cy0 < 0:
+            cy1 -= cy0; cy0 = 0
+        if cx1 > raw_w:
+            cx0 -= cx1 - raw_w; cx1 = raw_w
+        if cy1 > raw_h:
+            cy0 -= cy1 - raw_h; cy1 = raw_h
+        # clamp in case the raw image is smaller than CROP_SIZE
+        cx0 = max(0, cx0); cy0 = max(0, cy0)
+        crop = raw_img[cy0:cy1, cx0:cx1]
+        if crop.size == 0:
+            lines.append(f"  {i}: empty crop, skipping")
+            continue
+
+        fname = f"{serial}_{date}_{zone}-{view}_{i}"
+        crop_dir = os.path.join(OUT_CROP_DIR, f"{zone}-{view}", "test" if TEST_MODE else "")
+        os.makedirs(crop_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(crop_dir, f"{fname}.png"), crop)
+
+        # side-by-side: raw (downscaled) with BLUE crop border (+ defect box) | the crop
+        box_col = (0, 140, 255) if kind == "tight" else (0, 0, 255)
+        s = SIDE_SCALE
+        disp = raw_small.copy()
+        cv2.rectangle(disp, (int(cx0 * s), int(cy0 * s)),
+                      (int(cx1 * s), int(cy1 * s)), (255, 0, 0), 3)             # BLUE crop border
+        cv2.rectangle(disp, (int(rx * s), int(ry * s)),
+                      (int((rx + rw) * s), int((ry + rh) * s)), box_col, 2)     # defect / zone box
+        side = _compose_side_by_side(
+            disp, crop,
+            f"{serial}  RAW  (blue = crop border, {'orange = defect box' if kind == 'tight' else 'red = NG zone fallback'})",
+            f"crop {i} [{kind}]   {crop.shape[1]}x{crop.shape[0]} px")
+        cv2.imwrite(os.path.join(OUT_SIDE_DIR, f"{fname}.png"), side)
+        lines.append(f"  {i} [{kind}]: result=({x},{y},{w},{h}) -> fixed crop raw=({cx0},{cy0})-({cx1},{cy1})"
+                     f"  {crop.shape[1]}x{crop.shape[0]} px")
+
+    return "\n".join(lines)
+
+
 def main():
     for d in (OUT_SIDE_DIR, OUT_DIAG_DIR):
         os.makedirs(d, exist_ok=True)
 
-    for serial, date, zone, view, raw_path, result_path in discover_fail_results():
-        result_img = cv2.imread(result_path)
-        raw_img = cv2.imread(raw_path)
-        if result_img is None or raw_img is None:
-            print(f"[{serial}] could not read images, skipping")
-            continue
-
-        res_h, res_w = result_img.shape[:2]
-        raw_h, raw_w = raw_img.shape[:2]
-        sx, sy = raw_w / res_w, raw_h / res_h          # RESULT -> RAW scale (== 2.0 here)
-
-        boxes = find_defect_boxes(result_img)
-        kinds = ", ".join(b[4] for b in boxes) or "none"
-        print(f"[{serial}] {len(boxes)} defect box(es): {kinds}  (raw/result scale {sx:.2f}x{sy:.2f})")
-
-        diag = result_img.copy()
-        banner_h = _draw_diag_legend(diag)
-        for (x, y, w, h, kind) in boxes:
-            col = DIAG_TIGHT_COL if kind == "tight" else DIAG_ZONE_COL
-            label = "TIGHT DEFECT (cropped)" if kind == "tight" else "NG ZONE (fallback crop)"
-            cv2.rectangle(diag, (x, y), (x + w, y + h), col, 4)
-            # keep the label clear of the top banner: below the box if it sits under the banner
-            ly = y + h + 34 if y < banner_h + 24 else y - 12
-            cv2.putText(diag, label, (x, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.9, col, 2, cv2.LINE_AA)
-        cv2.imwrite(os.path.join(OUT_DIAG_DIR, f"{serial}_detection.png"),
-                    cv2.resize(diag, None, fx=0.5, fy=0.5))
-
-        for i, (x, y, w, h, kind) in enumerate(boxes):
-            # fixed CROP_SIZE × CROP_SIZE window in RAW pixels, centred on defect centroid
-            rx, ry, rw, rh = x * sx, y * sy, w * sx, h * sy
-            half = CROP_SIZE / 2
-            cx0 = int(rx + rw / 2 - half)
-            cy0 = int(ry + rh / 2 - half)
-            cx1 = cx0 + CROP_SIZE
-            cy1 = cy0 + CROP_SIZE
-            # shift inward if the window exceeds raw image bounds (never shrink the window)
-            if cx0 < 0:
-                cx1 -= cx0; cx0 = 0
-            if cy0 < 0:
-                cy1 -= cy0; cy0 = 0
-            if cx1 > raw_w:
-                cx0 -= cx1 - raw_w; cx1 = raw_w
-            if cy1 > raw_h:
-                cy0 -= cy1 - raw_h; cy1 = raw_h
-            # clamp in case the raw image is smaller than CROP_SIZE
-            cx0 = max(0, cx0); cy0 = max(0, cy0)
-            crop = raw_img[cy0:cy1, cx0:cx1]
-            if crop.size == 0:
-                print(f"  {i}: empty crop, skipping")
-                continue
-
-            fname = f"{serial}_{date}_{zone}-{view}_{i}"
-            crop_dir = os.path.join(OUT_CROP_BASE, f"{zone}-{view}")
-            os.makedirs(crop_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(crop_dir, f"{fname}.png"), crop)
-
-            # side-by-side: raw (downscaled) with BLUE crop border (+ defect box) | the crop
-            box_col = (0, 140, 255) if kind == "tight" else (0, 0, 255)
-            disp = raw_img.copy()
-            cv2.rectangle(disp, (cx0, cy0), (cx1, cy1), (255, 0, 0), 10)            # BLUE crop border
-            cv2.rectangle(disp, (int(rx), int(ry)),
-                          (int(rx + rw), int(ry + rh)), box_col, 6)                 # defect / zone box
-            disp_small = cv2.resize(disp, None, fx=0.28, fy=0.28)
-
-            fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-            axes[0].imshow(cv2.cvtColor(disp_small, cv2.COLOR_BGR2RGB))
-            axes[0].set_title(f"{serial}  RAW  (blue = crop border, {'orange = defect box' if kind == 'tight' else 'red = NG zone fallback'})")
-            axes[1].imshow(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-            axes[1].set_title(f"crop {i} [{kind}]   {crop.shape[1]}x{crop.shape[0]} px")
-            for ax in axes:
-                ax.axis("off")
-            plt.tight_layout()
-            fig.savefig(os.path.join(OUT_SIDE_DIR, f"{fname}.png"), dpi=90)
-            plt.close(fig)
-            print(f"  {i} [{kind}]: result=({x},{y},{w},{h}) -> fixed crop raw=({cx0},{cy0})-({cx1},{cy1})"
-                  f"  {crop.shape[1]}x{crop.shape[0]} px")
+    recs = discover_fail_results()
+    with multiprocessing.Pool(NUM_WORKERS) as pool:
+        for out in pool.imap(process_unit, recs):
+            print(out)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+class_id,class_name,count,pct
+0,comtam_dust,811,53.11
+1,comtam_stain,56,3.67
+2,comtam_x,396,25.93
+3,scratch_dent,39,2.55
+4,scratch_line,25,1.64
+5,other,200,13.1

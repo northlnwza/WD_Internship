@@ -1,6 +1,0 @@
-# ignore everything in this folder
-*
-# except these
-!.gitignore
-!measure_pipeline.ipynb
-!showcase.html

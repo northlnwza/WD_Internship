@@ -1,11 +1,12 @@
 data:
   labels_dir: "labels"              # folder with .png + .txt pairs (YOLO polygon)
+  labels_version: "c_0702"          # default labeling round; Cell 3 lists all versions and lets you pick (Enter = this one)
   classes:
-    0: "comtam_dust"                     # must match X-AnyLabeling class order
-    1: "comtam_stain"
-    2: "comtam_x"  
-    3: "scratch_dent"   
-    4: "scratch_line"
+    0: "contam_dust"                     # must match X-AnyLabeling class order
+    1: "contam_stain"
+    2: "scuffmark"  
+    3: "spot"   
+    4: "scratch"
     5: "other"                 # defined in schema; 0 instances drawn yet
   train_ratio: 0.70                 # 70% train / 15% val / 15% test
   val_ratio:   0.15
@@ -17,16 +18,17 @@ model:
   input_size: 640
 
 training:
-  epochs: 300
-  batch_size: 32
-  patience: 50                      # early stopping patience
+  epochs: 500
+  batch_size: 64                    # last run used 11.4/48GB VRAM at 32 — plenty of headroom (drop to 32 on smaller GPUs)
+  patience: 30                      # early stopping patience (last run: best@194, stop@244 — 50 wasted epochs)
   cos_lr: true                      # cosine LR decay — smoother convergence
+  cache: true                       # cache images in RAM (dataset is small) — much faster epochs
   output_dir: "models"
 
   # --- small-dataset hardening (reduces overfit on few images) ---
-  freeze: 10                        # freeze backbone layers (0 = train all)
+  freeze: 0                         # full fine-tune; freeze=10 froze the whole backbone and capped accuracy
   augment: true                     # enable augmentation block below
-  hsv_h: 0.05                       # hue jitter
+  hsv_h: 0.015                      # hue jitter — keep mild: hue separates dust/stain/x classes
   hsv_s: 0.7                        # saturation jitter
   hsv_v: 0.4                        # brightness jitter
   degrees: 20.0                     # rotation (deg); defects are orientation-free
@@ -35,5 +37,25 @@ training:
   fliplr: 0.5                       # horizontal flip prob
   flipud: 0.5                       # vertical flip prob
   mosaic: 1.0                       # mosaic aug
-  copy_paste: 0.3                   # paste defect polygons onto other images (great for seg)
+  copy_paste: 0.5                   # paste defect polygons onto other images — best boost for rare classes
   mixup: 0.1                        # blend two images together (10% prob); conservative for seg
+
+# --- re-judgment GUI (rejudge_gui.py) -----------------------------------------
+# Verdict rules per docs/adr/0001: scratch gated by length (mm), scuffmark by
+# area (mm²); contamination -> Cleaning; spot/other/empty -> Review.
+# null = value not decided yet -> affected classes fall back to Review (never
+# guess a verdict from an unset limit or calibration).
+rejudge:
+  weights_dirs: ["models", "train history"]   # scanned recursively for *.pt
+  output_dir: "rejudge_output"
+  conf_threshold: 0.25              # min confidence for a detection to count
+  near_limit_margin: 0.80           # undersize but >= this fraction of the limit -> flag for closer look
+  criteria:
+    scratch_length_mm: null         # TODO: real spec limit (longest mask dimension, mm)
+    scuffmark_area_mm2: null        # TODO: real spec limit (mask area, mm²)
+  unit_limits:                      # unit fails when either total is exceeded
+    max_defect_count: null          # TODO: max defects per unit (null = no limit)
+    max_total_area_mm2: null        # TODO: max combined defect area (null = no limit)
+  calibration:
+    default_mm_per_px: null         # TODO: fallback mm-per-pixel (RAW image scale)
+    per_station_view: {}            # e.g. "CM1-2": 0.0123 — keys are "{station}-{view}"

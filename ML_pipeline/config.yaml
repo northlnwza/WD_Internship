@@ -47,7 +47,8 @@ training:
 # guess a verdict from an unset limit or calibration).
 rejudge:
   weights_dirs: ["models", "train history"]   # scanned recursively for *.pt
-  output_dir: "rejudge_output"
+  output_dir: "rejudge_output"      # outputs grouped by filename date: {output_dir}/{YYYYMMDD}/
+  poll_seconds: 1                   # Fail-folder watch interval (seconds)
   conf_threshold: 0.25              # min confidence for a detection to count
   near_limit_margin: 0.80           # undersize but >= this fraction of the limit -> flag for closer look
   criteria:

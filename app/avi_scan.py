@@ -53,6 +53,8 @@ IMAGE_EXT        = ".jpg"
 FAIL_STATUS      = "Fail"
 
 CROP_SIZE        = 640          # fixed crop window (RAW pixels); centred on defect centroid
+TILE_OVERLAP     = 128          # zoning tiles: px shared by neighbouring tiles -- wider than
+                                # any single defect, so each defect fits whole in >=1 tile
 SIDE_SCALE       = 0.28         # downscale of the RAW overview panel in the side-by-side figure
 NUM_WORKERS      = os.cpu_count() or 1   # units processed in parallel (each unit is independent)
 
@@ -633,6 +635,51 @@ def find_raw_for(serial, station, view, raw_dir, fail_stem=None):
     return max(pool)[2]                         # no Fail timestamp: newest known
 
 
+PIC_LEAF = "Activescale"     # the only image subfolder under a {product}/{day} day folder
+
+
+def _pic_subdirs(path):
+    """Immediate subfolder names of `path` (empty set if it is not a dir)."""
+    try:
+        return {n for n in os.listdir(path) if os.path.isdir(os.path.join(path, n))}
+    except OSError:
+        return set()
+
+
+def pic_products(root, both_sides):
+    """Product folder names under the picture-tree `root`. both_sides=True
+    (Result-mapping) -> present under BOTH Fail/ and Image/; False (Zoning) ->
+    Image/ only. Sorted."""
+    img = _pic_subdirs(os.path.join(root, "Image"))
+    if both_sides:
+        img &= _pic_subdirs(os.path.join(root, "Fail"))
+    return sorted(img)
+
+
+def pic_leaf(root, side, product, day):
+    """The Activescale image folder for one side/product/day."""
+    return os.path.join(root, side, product, day, PIC_LEAF)
+
+
+def product_from_raw_path(path):
+    """Product folder name for a RAW that lives under .../Image/{product}/{day}/
+    Activescale/file. '' when the path is not in that tree layout -- so the ROI
+    Editor labels zones with the SAME identity the scan uses."""
+    parts = os.path.normpath(path).split(os.sep)
+    if len(parts) >= 4 and parts[-2] == PIC_LEAF:
+        return parts[-4]                         # .../product/day/Activescale/file
+    return ""
+
+
+def pic_days(root, product, both_sides):
+    """Day folders for `product` that carry an Activescale leaf on the needed
+    side(s): Image always, plus Fail when both_sides. Newest first."""
+    days = {d for d in _pic_subdirs(os.path.join(root, "Image", product))
+            if os.path.isdir(pic_leaf(root, "Image", product, d))
+            and (not both_sides or os.path.isdir(pic_leaf(root, "Fail", product, d)))}
+    return sorted(days, reverse=True)
+
+
 def find_weights(dirs, root):
     """All *.pt under the configured dirs, labeled 'run-folder/file.pt'."""
     out = {}
@@ -649,22 +696,94 @@ class Engine:
         self.settings = settings
         self.weights_path = weights_path
         self.model = None
+        self.device = "cpu"       # resolved in load(): 0 (CUDA) when a GPU is present
+        self.half = False         # FP16 only on GPU
+        self.batch = 8            # zones per predict call (raised on GPU)
 
     def load(self):
+        import torch
         from ultralytics import YOLO
+        # AVI_FORCE_CPU=1 ignores the GPU (diagnosis knob: isolates GPU-path
+        # failures from CPU-path ones on the server).
+        force_cpu = os.environ.get("AVI_FORCE_CPU", "").strip() not in ("", "0")
+        print("[engine] probing CUDA...", flush=True)  # hang right here = driver-level cuInit hang
+        if not force_cpu and torch.cuda.is_available():   # auto-detect the server GPU
+            self.device, self.half, self.batch = 0, True, 32
+            cap = torch.cuda.get_device_capability(0)
+            free_b, total_b = torch.cuda.mem_get_info(0)
+            print(f"[engine] gpu={torch.cuda.get_device_name(0)} "
+                  f"capability={cap[0]}.{cap[1]} "
+                  f"vram={free_b / 2**30:.1f}GiB free / {total_b / 2**30:.1f}GiB "
+                  f"wheel_archs={torch.cuda.get_arch_list()}", flush=True)
+            # Pre-Volta GPUs (capability < 7.0, e.g. Pascal Quadro/GTX 10xx) run
+            # FP16 up to 64x slower than FP32: a "frozen" scan that is really one
+            # many-minute batch. FP32 loses nothing in accuracy, so force it there.
+            if cap < (7, 0):
+                self.half = False
+            # Server-side bisect knobs (run_avi_scan_fp32.bat / run_avi_scan_batch4.bat).
+            if os.environ.get("AVI_NO_HALF", "").strip() not in ("", "0"):
+                self.half = False
+            self.batch = max(1, int(os.environ.get("AVI_GPU_BATCH", self.batch)))
+        else:                                  # CPU box: use every core
+            self.device, self.half, self.batch = "cpu", False, 8
+            # AVI_CPU_THREADS overrides the all-cores default (diagnosis knob:
+            # many-core servers can thrash on full-width intra-op threading).
+            threads = int(os.environ.get("AVI_CPU_THREADS", os.cpu_count() or 1))
+            torch.set_num_threads(max(1, threads))
+        print(f"[engine] torch={torch.__version__} cuda={torch.cuda.is_available()} "
+              f"device={self.device} half={self.half} batch={self.batch} "
+              f"threads={torch.get_num_threads()} cores={os.cpu_count()}", flush=True)
+        t0 = time.time()
         self.model = YOLO(self.weights_path)
+        print(f"[engine] weights loaded in {time.time() - t0:.1f}s", flush=True)
+        if self.device != "cpu":
+            # The first CUDA inference pays context init + cuDNN autotune + (if
+            # the wheel ships no SASS for this GPU) a PTX JIT recompile of every
+            # kernel -- worst case many minutes at 100% CPU. Paying it here pins
+            # any such stall to this breadcrumb instead of the first real unit.
+            t0 = time.time()
+            self.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=640,
+                               verbose=False, device=self.device, half=self.half)
+            print(f"[engine] gpu warmup predict in {time.time() - t0:.1f}s", flush=True)
 
-    def predict(self, img):
-        """[(class_name, conf, poly_local Nx2)] for one BGR crop."""
-        r = self.model.predict(img, conf=self.settings.conf_threshold,
-                               imgsz=640, verbose=False)[0]
+    def _decode(self, r):
+        """[(class_name, conf, poly_local Nx2)] from one ultralytics Result."""
         out = []
         if r.masks is None:
             return out
         for poly, cls, conf in zip(r.masks.xy, r.boxes.cls, r.boxes.conf):
             if len(poly) >= 3:
-                name = self.model.names[int(cls)]
-                out.append((str(name), float(conf), np.asarray(poly, np.float32)))
+                out.append((str(self.model.names[int(cls)]), float(conf),
+                            np.asarray(poly, np.float32)))
+        return out
+
+    def predict(self, img):
+        """[(class_name, conf, poly_local Nx2)] for one BGR crop."""
+        return self._decode(self.model.predict(
+            img, conf=self.settings.conf_threshold, imgsz=640, verbose=False,
+            device=self.device, half=self.half)[0])
+
+    def predict_many(self, imgs):
+        """Detections for a list of BGR crops -> a list of per-crop detection
+        lists, order preserved.
+
+        On GPU we batch (one model call per `batch`-sized chunk) -- the parallel
+        hardware makes a batch far cheaper than N separate calls. On CPU we do NOT
+        batch: measured, a CPU batch is slower than sequential single predicts (no
+        parallelism, worse cache behaviour) and it perturbs results via float
+        jitter -- so CPU runs the exact per-zone path, identical to before."""
+        if self.device == "cpu":
+            return [self.predict(im) for im in imgs]
+        out = []
+        n_chunks = (len(imgs) + self.batch - 1) // self.batch
+        for i in range(0, len(imgs), self.batch):
+            t0 = time.time()
+            results = self.model.predict(
+                imgs[i:i + self.batch], conf=self.settings.conf_threshold,
+                imgsz=640, verbose=False, device=self.device, half=self.half)
+            print(f"[engine] gpu chunk {i // self.batch + 1}/{n_chunks} "
+                  f"({len(results)} zones) in {time.time() - t0:.1f}s", flush=True)
+            out.extend(self._decode(r) for r in results)
         return out
 
     def _refine(self, raw, det: Detection):
@@ -971,7 +1090,13 @@ class App:
         self.current = None          # index into self.units
         self.current_crop = 0
         self.writer = None
-        self.q = queue.Queue()
+        self.q = queue.Queue(maxsize=8)   # backpressure: a GPU-speed worker that
+                                          # outruns the GUI must idle, not balloon
+                                          # RAM with queued image buffers
+        self._csv_dirty = False           # units arrived since the last CSV write
+        self._csv_last = 0.0              # throttle stamp: CSV rewrites at most 1/s
+        self._show_pending = None         # unit index to render on the next tick
+        self._last_show = 0.0             # render throttle stamp (burst: ~3/s)
         self.worker = None
         self.stop_evt = None
         self._photo = {}             # keep PhotoImage refs alive
@@ -990,7 +1115,7 @@ class App:
 
         self._build_toolbar()
         self._build_body()
-        self.template = TemplatePane(roi_tab)
+        self.template = TemplatePane(roi_tab, root_getter=lambda: self.var_root.get().strip())
         self.template.pack(fill="both", expand=True)
         root.bind("<Key>", self._on_key)
         root.after(100, self._poll)
@@ -1001,37 +1126,51 @@ class App:
         tk, ttk = self.tk, self.ttk
         top = ttk.Frame(self.host, padding=(4, 4, 4, 0))
         top.pack(fill="x")
-        self.lbl_fail = ttk.Label(top, text="Fail folder (RESULT):")
-        self.lbl_fail.pack(side="left")
-        self.var_fail = tk.StringVar()
-        self.ent_fail = ttk.Entry(top, textvariable=self.var_fail, width=40)
-        self.ent_fail.pack(side="left", padx=2)
-        self.btn_fail = ttk.Button(top, text="Browse…", command=lambda: self._pick_dir(
-            self.var_fail, "Fail folder - RESULT images with bounding boxes"))
-        self.btn_fail.pack(side="left")
-        ttk.Label(top, text="  Image folder (RAW):").pack(side="left")
-        self.var_image = tk.StringVar()
-        ttk.Entry(top, textvariable=self.var_image, width=40).pack(side="left", padx=2)
-        ttk.Button(top, text="Browse…", command=lambda: self._pick_dir(
-            self.var_image, "Image folder - RAW images")).pack(side="left")
 
-        # mode toggle + zoning product/version (grey out the other mode's fields)
+        # picture-tree root (holds Fail/ and Image/); pick once per session, the
+        # Fail/Image leaves are then derived from Product + Day below.
+        ttk.Label(top, text="Root:").pack(side="left")
+        self.var_root = tk.StringVar()
+        ttk.Entry(top, textvariable=self.var_root, width=34).pack(side="left", padx=2)
+        ttk.Button(top, text="Browse…", command=self._pick_root).pack(side="left")
+
+        # mode toggle (Result-mapping needs Fail+Image; Zoning needs Image only)
         ttk.Label(top, text="   Mode:").pack(side="left")
         self.var_mode = tk.StringVar(value="result")
         ttk.Radiobutton(top, text="Result-mapping", value="result",
                         variable=self.var_mode, command=self._mode_changed).pack(side="left")
         ttk.Radiobutton(top, text="Zoning", value="zoning",
                         variable=self.var_mode, command=self._mode_changed).pack(side="left")
-        ttk.Label(top, text=" product:").pack(side="left")
+
+        # product : the folder name IS the single identity -- it locates the leaf
+        # and (in Zoning) keys the rois.json zone-set.
+        ttk.Label(top, text="   Product:").pack(side="left")
         self.var_product = tk.StringVar()
-        self.cmb_product = ttk.Combobox(top, textvariable=self.var_product, width=16,
-                                        state="disabled")
-        self.cmb_product.configure(postcommand=lambda: self.cmb_product.configure(values=products()))
-        self.cmb_product.bind("<<ComboboxSelected>>", lambda e: self._refresh_ver())
+        self.cmb_product = ttk.Combobox(top, textvariable=self.var_product, width=18,
+                                        state="readonly")
+        self.cmb_product.configure(postcommand=self._refresh_products)
+        self.cmb_product.bind("<<ComboboxSelected>>", lambda e: self._product_changed())
         self.cmb_product.pack(side="left", padx=2)
+
+        # ROI zone-set revision (Zoning only)
+        ttk.Label(top, text=" Zone version:").pack(side="left")
         self.var_ver = tk.StringVar()
         self.cmb_ver = ttk.Combobox(top, textvariable=self.var_ver, width=12, state="disabled")
+        self.cmb_ver.configure(postcommand=self._ver_values)   # re-read on open (editor may have added some)
         self.cmb_ver.pack(side="left")
+
+        # day : click one. Only days carrying an Activescale leaf on the needed
+        # side(s) are listed, newest first.
+        ttk.Label(top, text="   Day:").pack(side="left")
+        self.var_day = tk.StringVar()
+        self.lst_days = tk.Listbox(top, height=4, width=12, exportselection=False)
+        self.lst_days.pack(side="left", padx=2)
+        self.lst_days.bind("<<ListboxSelect>>", lambda e: self._day_changed())
+
+        # read-only echo of the resolved Activescale leaves
+        self.var_leaf = tk.StringVar(value="Pick a root, product and day.")
+        ttk.Label(self.host, textvariable=self.var_leaf, foreground="grey",
+                  padding=(6, 0)).pack(fill="x")
 
         bar = ttk.Frame(self.host, padding=4)
         bar.pack(fill="x")
@@ -1065,22 +1204,86 @@ class App:
         ttk.Label(bar, textvariable=self.var_status).pack(side="left", padx=10)
         self._mode_changed()                     # set initial enabled/disabled fields
 
+    def _both_sides(self):
+        """Result-mapping consumes both Fail and Image; Zoning only Image."""
+        return self.var_mode.get() != "zoning"
+
     def _mode_changed(self):
         zoning = self.var_mode.get() == "zoning"
-        for w in (self.ent_fail, self.btn_fail):
-            w.configure(state="disabled" if zoning else "normal")
-        self.lbl_fail.configure(foreground="grey" if zoning else "")
-        for w in (self.cmb_product, self.cmb_ver):
-            w.configure(state="readonly" if zoning else "disabled")
-        if zoning and not self.cmb_product["values"]:
-            self.cmb_product.configure(values=products())
+        self.cmb_ver.configure(state="readonly" if zoning else "disabled")
+        if not zoning:
+            self.var_ver.set("")
+        # product/day lists differ per mode (intersection vs Image-only)
+        self._refresh_products()
+        if zoning and self.var_product.get().strip():
+            self._refresh_ver()          # populate revisions for the current product
+
+    def _pick_root(self):
+        from tkinter import filedialog
+        d = filedialog.askdirectory(
+            title="Pick the picture-tree root (the folder holding Fail/ and Image/)")
+        if d:
+            self.var_root.set(d)
+            self._refresh_products()
+
+    def _refresh_products(self):
+        root = self.var_root.get().strip()
+        vals = pic_products(root, self._both_sides()) if os.path.isdir(root) else []
+        self.cmb_product.configure(values=vals)
+        if self.var_product.get() not in vals:
+            self.var_product.set("")
+            self.cmb_ver.configure(values=[])
+            self.var_ver.set("")
+        self._refresh_days()
+
+    def _product_changed(self):
+        self._refresh_days()
+        if self.var_mode.get() == "zoning":
+            self._refresh_ver()
 
     def _refresh_ver(self):
+        """Populate revisions AND pick a default (active, else newest)."""
         prod = self.var_product.get().strip()
         vers = versions_of(prod) or []
         self.cmb_ver.configure(values=vers)
         act = active_of(prod)
         self.var_ver.set(act if act else (vers[0] if vers else ""))
+
+    def _ver_values(self):
+        """postcommand: refresh the revision list on dropdown-open without
+        disturbing the current selection (the ROI Editor may have added some)."""
+        self.cmb_ver.configure(values=versions_of(self.var_product.get().strip()) or [])
+
+    def _refresh_days(self):
+        self.lst_days.delete(0, "end")
+        self.var_day.set("")
+        root = self.var_root.get().strip()
+        prod = self.var_product.get().strip()
+        days = pic_days(root, prod, self._both_sides()) if (os.path.isdir(root) and prod) else []
+        for d in days:
+            self.lst_days.insert("end", d)
+        if days:
+            self.lst_days.selection_set(0)          # newest first, pre-selected
+            self.var_day.set(days[0])
+        self._update_leaf_label()
+
+    def _day_changed(self):
+        sel = self.lst_days.curselection()
+        self.var_day.set(self.lst_days.get(sel[0]) if sel else "")
+        self._update_leaf_label()
+
+    def _update_leaf_label(self):
+        root = self.var_root.get().strip()
+        prod = self.var_product.get().strip()
+        day = self.var_day.get().strip()
+        if not (root and prod and day):
+            self.var_leaf.set("Pick a root, product and day.")
+            return
+        img = pic_leaf(root, "Image", prod, day)
+        if self._both_sides():
+            self.var_leaf.set(f"Fail: {pic_leaf(root, 'Fail', prod, day)}   |   Image: {img}")
+        else:
+            self.var_leaf.set(f"Image: {img}")
 
     def _build_body(self):
         tk, ttk = self.tk, self.ttk
@@ -1169,22 +1372,37 @@ class App:
             self.var_status.set("Stopping after the current image…")
             return
         zoning = self.var_mode.get() == "zoning"
-        fail_dir = self.var_fail.get().strip()
-        raw_dir = self.var_image.get().strip()
+        root = self.var_root.get().strip()
+        product = self.var_product.get().strip()
+        day = self.var_day.get().strip()
+        version = self.var_ver.get().strip()
+        if not os.path.isdir(root):
+            messagebox.showerror("No root", "Pick the picture-tree root (holds Fail/ and Image/).")
+            return
+        if not product:
+            messagebox.showerror("No product", "Pick a product.")
+            return
+        if not day:
+            messagebox.showerror("No day", "Pick a day.")
+            return
+        raw_dir = pic_leaf(root, "Image", product, day)
+        fail_dir = pic_leaf(root, "Fail", product, day)
         if not os.path.isdir(raw_dir):
-            messagebox.showerror("No input", "Pick the Image folder (RAW images).")
+            messagebox.showerror("No images", f"No Image Activescale folder:\n{raw_dir}")
             return
         if not zoning and not os.path.isdir(fail_dir):
-            messagebox.showerror("No input", "Result-mapping needs the Fail folder (RESULT images).")
+            messagebox.showerror("No images", f"No Fail Activescale folder:\n{fail_dir}")
             return
-        product = self.var_product.get().strip()
-        version = self.var_ver.get().strip()
         if zoning:
             if not product:
                 messagebox.showerror("No product", "Zoning mode: pick a product (draw zones in the ROI Editor first).")
                 return
             if not boxes_for(product, version):
-                messagebox.showerror("No zones", f"Product '{product}' / '{version}' has no ROI shapes.")
+                messagebox.showerror(
+                    "No zones",
+                    f"Product '{product}' / '{version}' has no ROI shapes in:\n{ROI_PATH}\n\n"
+                    f"Draw zones in the ROI Editor under the product name '{product}' "
+                    f"(open a RAW from this product's Image folder and Save).")
                 return
         if not self.var_weight.get():
             messagebox.showerror("No weight", "Pick a trained weight (.pt).")
@@ -1260,6 +1478,7 @@ class App:
                         unit = UnitResult(*rec[:4], rec[4], rec[5],
                                           error=str(e), suggested=REVIEW)
                 done.add(base)
+                self._worker_save_images(unit)
                 self.q.put(("unit", unit))
             stop_evt.wait(self.settings.poll_seconds)
         self.q.put(("done",))
@@ -1297,6 +1516,7 @@ class App:
                     s, d, st, vw = parse_fail_name(path)
                     unit = UnitResult(s, d, st, vw, path, path, error=str(e), suggested=REVIEW)
                 done.add(base)
+                self._worker_save_images(unit)
                 self.q.put(("unit", unit))
             stop_evt.wait(self.settings.poll_seconds)
         self.q.put(("done",))
@@ -1316,42 +1536,65 @@ class App:
                                 "results are rewritten on the next save.")
             return False
 
-    def _poll(self):
+    def _worker_save_images(self, unit):
+        """Runs on the worker thread. Image encodes are the heavy part of
+        persisting a unit; on the GUI thread they starved tk whenever the
+        worker (GPU) produced units faster than they could be written --
+        whole-burst "Not Responding" with no incremental rows. CSVs stay on
+        the GUI thread (they read self.units)."""
         try:
-            while True:
+            self.writer.save_images(unit)
+        except Exception as e:                                    # noqa: BLE001
+            # never let an image write kill the watcher thread
+            self.q.put(("status", f"Image write failed ({e}) - images for "
+                                  f"{unit.serial} may be missing."))
+
+    def _poll(self):
+        # Bounded drain: at most 3 messages per 100ms tick, so tk keeps pumping
+        # (live window, rows appearing one by one) even when a GPU-speed worker
+        # fills the queue continuously. 3/tick still drains ~30 units/s, far
+        # above any producer.
+        try:
+            for _ in range(3):
                 msg = self.q.get_nowait()
                 if msg[0] == "unit":
                     unit = msg[1]
                     idx = next((i for i, u in enumerate(self.units)
                                 if os.path.basename(u.result_path)
                                 == os.path.basename(unit.result_path)), None)
-                    # follow the newest arrival, but only while the user is
-                    # already parked on the latest unit -- navigating back to
-                    # review an earlier one is never yanked forward.
-                    at_latest = (self.current is not None
-                                 and self.current == len(self.units) - 1)
+                    # "Follow new" checked = always land on the newest arrival,
+                    # even after navigating back (the checkbox -- hotkey F -- is
+                    # the one and only control; an invisible "only while parked
+                    # at the latest" rule just read as a broken checkbox).
+                    # Renders are deferred to _show_pending (throttled below):
+                    # rendering every unit of a GPU burst would hog the GUI
+                    # thread again.
                     if idx is None:
                         self.units.append(unit)
                         self._add_row(unit)
-                        if self.var_follow.get() and (self.current is None or at_latest):
-                            self._show_unit(len(self.units) - 1)
+                        if self.var_follow.get():
+                            self._show_pending = len(self.units) - 1
                     else:                       # re-run of a shown unit (late RAW)
                         unit.human, unit.human_time = \
                             self.units[idx].human, self.units[idx].human_time
                         self.units[idx] = unit
                         self._refresh_row(idx)
                         if self.current == idx:
-                            self._show_unit(idx)
-                    if self._save_results(unit):
-                        self.var_status.set(f"Processed {len(self.units)}: "
-                                            f"{unit.serial} [{unit.suggested}]")
-                    if self.current is None:
-                        self._show_unit(0)
+                            self._show_pending = idx
+                    self._csv_dirty = True      # images were written by the worker
+                    self.var_status.set(f"Processed {len(self.units)}: "
+                                        f"{unit.serial} [{unit.suggested}]")
+                    if self.current is None and self._show_pending is None:
+                        self._show_pending = 0
+                    # images are already on disk: keep only the viewed unit's buffers
+                    if self.current is not None:
+                        self._trim_unit_memory(self.current)
                 elif msg[0] == "done":
                     self.btn_start["text"] = "Start"
                     self.btn_start["state"] = "normal"
                     self.var_status.set(f"Stopped - {len(self.units)} unit(s) this session. "
                                         f"Output: {self.writer.root}")
+                    self._csv_last = 0.0        # session over: flush the CSVs now
                 elif msg[0] == "fatal":
                     self.btn_start["text"] = "Start"
                     self.btn_start["state"] = "normal"
@@ -1361,6 +1604,19 @@ class App:
         except queue.Empty:
             pass
         finally:
+            # Deferred render: during a burst at most ~3/s; the moment the
+            # queue is empty the newest unit renders immediately.
+            if self._show_pending is not None and \
+                    (self.q.empty() or time.time() - self._last_show >= 0.3):
+                self._show_unit(self._show_pending)
+                self._last_show = time.time()
+            # CSVs are a full merged rewrite (cost grows with the session), so
+            # they are batched: at most one write per second, never one per
+            # unit. A failed write stays dirty and is retried next second.
+            if self._csv_dirty and time.time() - self._csv_last >= 1.0:
+                if self._save_results():
+                    self._csv_dirty = False
+                self._csv_last = time.time()
             self.root.after(100, self._poll)   # re-arm even if a handler raised
 
     # ---- unit list / display ----
@@ -1380,12 +1636,15 @@ class App:
             self._show_unit(int(sel[0]), from_tree=True)
 
     def _show_unit(self, idx, from_tree=False):
+        self._show_pending = None   # manual navigation cancels any deferred render
         if not (0 <= idx < len(self.units)):
             return
         self.current, self.current_crop = idx, 0
         self.zoom = {"overlay": 1.0, "crop": 1.0}
         self.pan = {"overlay": (0.0, 0.0), "crop": (0.0, 0.0)}
         u = self.units[idx]
+        self._rebuild_unit_images(u)     # may have been freed to cap memory
+        self._trim_unit_memory(idx)      # keep only this unit's buffers in RAM
         if not from_tree:
             self.tree_units.selection_set(str(idx))
             self.tree_units.see(str(idx))
@@ -1421,6 +1680,29 @@ class App:
             self.current_crop = sel[0]
             self.zoom["crop"], self.pan["crop"] = 1.0, (0.0, 0.0)
             self._redraw()
+
+    def _rebuild_unit_images(self, u):
+        """Recreate the display buffers (downscaled overlay + full-res crops) that
+        _trim_unit_memory freed, by re-reading the RAW. No-op if still present or
+        the RAW is gone/unreadable (an error unit) -- _redraw then just skips."""
+        if u.overlay_base is not None or not u.raw_path:
+            return
+        raw = cv2.imread(u.raw_path)
+        if raw is None:
+            return
+        u.overlay_scale = min(1.0, OVERLAY_MAX_W / raw.shape[1])
+        u.overlay_base = cv2.resize(raw, None, fx=u.overlay_scale, fy=u.overlay_scale)
+        u.crop_bases = [raw[c.window[1]:c.window[3], c.window[0]:c.window[2]].copy()
+                        for c in u.crops]
+
+    def _trim_unit_memory(self, keep_idx):
+        """Free the heavy image buffers on every unit except keep_idx. They are
+        already written to disk and rebuilt on demand, so session RAM stays ~O(1)
+        instead of growing with every processed image."""
+        for i, u in enumerate(self.units):
+            if i != keep_idx and u.overlay_base is not None:
+                u.overlay_base = None
+                u.crop_bases = []
 
     def _redraw(self):
         if self.current is None:
@@ -2013,6 +2295,79 @@ def _safe(s):
 
 
 
+def _tile_starts(z0, z1, limit):
+    """Start offsets of CROP_SIZE-wide tiles covering [z0, z1), clamped to the
+    image [0, limit). Neighbours overlap by TILE_OVERLAP; the last tile is laid
+    flush with the far edge so coverage never falls short."""
+    lo = max(0, min(int(z0), limit - CROP_SIZE))
+    hi = max(lo, min(int(z1), limit) - CROP_SIZE)
+    if hi == lo:
+        return [lo]
+    starts = list(range(lo, hi, CROP_SIZE - TILE_OVERLAP))
+    starts.append(hi)
+    return starts
+
+
+def _merge_dets(dets, owners):
+    """Merge duplicate/fragment detections of the same class whose masks overlap
+    or nearly touch (<= PAD px apart) -- what overlapping tiles and adjacent
+    zones produce for one physical defect. Returns [(merged Detection, owner of
+    its highest-conf member)]. Pairwise raster tests are O(n^2) but n is a
+    handful of defects, not thousands."""
+    PAD = 4                    # zone-clipped fragments touch but don't overlap
+    n = len(dets)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    boxes = [d.bbox() for d in dets]
+    kernel = np.ones((2 * PAD + 1, 2 * PAD + 1), np.uint8)
+    for a in range(n):
+        for b in range(a + 1, n):
+            if dets[a].class_name != dets[b].class_name:
+                continue
+            ax0, ay0, ax1, ay1 = boxes[a]
+            bx0, by0, bx1, by1 = boxes[b]
+            if (ax0 > bx1 + PAD or bx0 > ax1 + PAD
+                    or ay0 > by1 + PAD or by0 > ay1 + PAD):
+                continue                              # bboxes don't even touch
+            ox, oy = int(min(ax0, bx0)) - PAD, int(min(ay0, by0)) - PAD
+            w = int(max(ax1, bx1)) - ox + 2 * PAD
+            h = int(max(ay1, by1)) - oy + 2 * PAD
+            ma = np.zeros((h, w), np.uint8)
+            mb = np.zeros((h, w), np.uint8)
+            cv2.fillPoly(ma, [np.round(dets[a].poly - [ox, oy]).astype(np.int32)], 255)
+            cv2.fillPoly(mb, [np.round(dets[b].poly - [ox, oy]).astype(np.int32)], 255)
+            if cv2.bitwise_and(cv2.dilate(ma, kernel), mb).any():
+                parent[find(a)] = find(b)
+
+    out = []
+    for root in {find(i) for i in range(n)}:
+        idxs = [i for i in range(n) if find(i) == root]
+        best = max(idxs, key=lambda i: dets[i].conf)
+        if len(idxs) > 1:      # union raster -> one contour spanning the seams
+            gx0 = min(boxes[i][0] for i in idxs)
+            gy0 = min(boxes[i][1] for i in idxs)
+            gx1 = max(boxes[i][2] for i in idxs)
+            gy1 = max(boxes[i][3] for i in idxs)
+            ox, oy = int(gx0) - PAD, int(gy0) - PAD
+            w, h = int(gx1) - ox + 2 * PAD, int(gy1) - oy + 2 * PAD
+            m = np.zeros((h, w), np.uint8)
+            for i in idxs:
+                cv2.fillPoly(m, [np.round(dets[i].poly - [ox, oy]).astype(np.int32)], 255)
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+            cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts:
+                c = max(cnts, key=cv2.contourArea)
+                dets[best].poly = c.reshape(-1, 2).astype(np.float32) + [ox, oy]
+        out.append((dets[best], owners[best]))
+    return out
+
+
 # ================================================== zoning crop (process_raw) ==
 def process_raw(engine, raw_path, settings, product, version=None):
     """(UnitResult or None, product). None == the product/version has no boxes.
@@ -2030,6 +2385,14 @@ def process_raw(engine, raw_path, settings, product, version=None):
 
     raw_h, raw_w = raw.shape[:2]
     unit = UnitResult(serial, date, station, view, raw_path, raw_path)
+
+    # Tiled inference (SAHI-style). Every zone is covered by CROP_SIZE-square
+    # tiles at NATIVE resolution, TILE_OVERLAP px of overlap: the model always
+    # sees the scale it was trained on (same window as crop mode) -- never a
+    # letterbox-shrunken whole zone and never synthetic black mask edges (the
+    # old bitwise_and masking was the false-positive source; out-of-zone
+    # detections are removed by clipping AFTER prediction instead).
+    crops, tiles, owner_of_tile = [], [], []
     for i, shape in enumerate(boxes):
         bx0, by0, bx1, by1 = shape_bbox(shape)
         x0 = max(0, int(round(bx0)))
@@ -2038,21 +2401,35 @@ def process_raw(engine, raw_path, settings, product, version=None):
         y1 = min(raw_h, int(round(by1)))
         if x1 <= x0 or y1 <= y0:
             continue                                   # shape fully off-image
-        win = (x0, y0, x1, y1)
-        sub = raw[y0:y1, x0:x1]
-        if shape["type"] != "rect":                    # zero everything outside the region
-            mask = shape_mask(shape, x0, y0, x1 - x0, y1 - y0)
-            sub = cv2.bitwise_and(sub, sub, mask=mask)
-        crop = CropResult(i, "roi", win, shape=shape)
-        for name, conf, local in engine.predict(sub):
-            det = Detection(name, conf, local + np.array([x0, y0], np.float32))
-            clipped = clip_poly_to_shape(det.poly, shape)   # keep only the in-region part
+        for ty in _tile_starts(y0, y1, raw_h):
+            for tx in _tile_starts(x0, x1, raw_w):
+                tiles.append((tx, ty))
+                owner_of_tile.append(len(crops))
+        crops.append(CropResult(i, "roi", (x0, y0, x1, y1), shape=shape))
+    subs = [raw[ty:ty + CROP_SIZE, tx:tx + CROP_SIZE] for tx, ty in tiles]
+
+    # Clip each tile's detections to its zone; a tile sees native context past
+    # the zone edge, and neighbouring zones find their own copy via their own
+    # tiles -- _merge_dets then collapses tile-seam fragments and cross-zone
+    # duplicates of the same physical defect into one Detection.
+    flat, flat_owner = [], []
+    for (tx, ty), k, dets in zip(tiles, owner_of_tile, engine.predict_many(subs)):
+        for name, conf, local in dets:
+            det = Detection(name, conf, local + np.array([tx, ty], np.float32))
+            clipped = clip_poly_to_shape(det.poly, crops[k].shape)
             if clipped is None:
                 continue                               # detection lies fully outside the ROI
             det.poly = clipped                         # region boundary is deliberate: no _refine
-            det.length_px, det.area_px = measure_poly(det.poly)
-            crop.detections.append(det)
-        unit.crops.append(crop)
+            flat.append(det)
+            flat_owner.append(k)
+
+    for det, k in _merge_dets(flat, flat_owner):
+        cx, cy = det.poly.mean(axis=0)                 # merged det spanning two zones is
+        k = next((j for j, c in enumerate(crops)       # filed under its centroid's zone
+                  if shape_contains(c.shape, cx, cy)), k)
+        det.length_px, det.area_px = measure_poly(det.poly)
+        crops[k].detections.append(det)
+    unit.crops.extend(crops)
 
     judge_unit(unit, settings)
     unit.overlay_scale = min(1.0, OVERLAY_MAX_W / raw_w)
@@ -2071,8 +2448,9 @@ class TemplatePane(ttk.Frame):
     """Pan/zoom reference view with Draw and Select tools; boxes saved under a
     product name (versioned)."""
 
-    def __init__(self, master):
+    def __init__(self, master, root_getter=None):
         super().__init__(master, padding=4)
+        self._root_getter = root_getter      # Scan tab's picture-tree root (for product names)
         self.raw_path = ""
         self.img = None                  # full-res BGR reference (for blit)
         self.img_w = self.img_h = 0
@@ -2247,7 +2625,14 @@ class TemplatePane(ttk.Frame):
 
     # ---- product / version / file ----------------------------------------
     def _refresh_products(self):
-        self.cmb_product["values"] = products()
+        """Offer the SAME product identity the scan uses: the folder names under
+        the picture-tree root (Image side), unioned with any product already in
+        rois.json (so existing/legacy zone-sets stay reachable)."""
+        names = set(products())
+        root = self._root_getter() if self._root_getter else ""
+        if root and os.path.isdir(root):
+            names |= set(pic_products(root, False))
+        self.cmb_product["values"] = sorted(names)
 
     def _refresh_versions(self, product, select=None):
         names = versions_of(product) or ["v1"]
@@ -2280,7 +2665,14 @@ class TemplatePane(ttk.Frame):
         self.img_h, self.img_w = img.shape[:2]
         self.zoom, self.pan, self.selected = 1.0, [0.0, 0.0], None
         self._refresh_products()
-        self.var_product.set(suggest_product(path))    # editable suggestion
+        # If the RAW came from .../Image/{product}/{day}/Activescale, name the
+        # zone-set with that exact folder product so the scan finds it. Otherwise
+        # keep a selected product, else fall back to the filename suggestion.
+        prod = product_from_raw_path(path)
+        if prod:
+            self.var_product.set(prod)
+        elif not self.var_product.get().strip():
+            self.var_product.set(suggest_product(path))    # editable suggestion
         self._refresh_versions(self.var_product.get())
         self.boxes = list(boxes_for(self.var_product.get(), self.version))
         self._poly = []
@@ -2289,10 +2681,23 @@ class TemplatePane(ttk.Frame):
 
     def open_raw(self):
         path = filedialog.askopenfilename(
-            title="Reference RAW",
+            title="Reference RAW", initialdir=self._raw_initialdir(),
             filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp"), ("All", "*.*")])
         if path:
             self.load_image(path)
+
+    def _raw_initialdir(self):
+        """Start the file dialog inside the selected product's newest Image
+        Activescale folder, so opened RAWs carry the folder-product identity."""
+        root = self._root_getter() if self._root_getter else ""
+        prod = self.var_product.get().strip()
+        if root and os.path.isdir(root) and prod:
+            days = pic_days(root, prod, False)
+            if days:
+                leaf = pic_leaf(root, "Image", prod, days[0])
+                if os.path.isdir(leaf):
+                    return leaf
+        return os.path.dirname(self.raw_path) if self.raw_path else ""
 
     def load_for(self, product, raw_path):
         """From the Scan tab: draw the missing product on this RAW."""
